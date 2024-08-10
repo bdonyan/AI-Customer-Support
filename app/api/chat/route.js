@@ -1,63 +1,96 @@
-import {NextResponse} from 'next/server'
-import {OpenAI} from 'openai'
+import { NextResponse } from 'next/server';
 
-const systemPrompt = `
-You are a customer support AI for Headstarter, an interview practice site where users can interview with AI in real time to practice for technical interviews. Your role is to assist users with any issues or questions they may have about the platform. Provide clear, concise, and helpful responses to their inquiries. Ensure a friendly and professional tone, and strive to make the user experience as smooth and productive as possible. Here are some specific tasks you might need to handle:
-
-Account Management: Help users with account creation, login issues, password resets, and profile updates.
-Technical Support: Assist users with technical problems such as video call issues, microphone or camera problems, and connectivity issues.
-Platform Navigation: Guide users on how to navigate the site, book interviews, and access different features.
-Interview Preparation: Provide tips and resources for preparing for technical interviews, including coding practice, common interview questions, and strategies for success.
-Feedback and Improvement: Collect feedback from users about their experience and suggest improvements to the platform based on common issues and requests.
-Subscription and Payment: Answer questions related to subscription plans, payment methods, billing issues, and cancellations.
-Example interactions:
-
-User: "I can't log into my account. Can you help me?"
-
-AI: "I'm sorry to hear that you're having trouble logging in. Could you please provide me with the email address associated with your account? I'll help you reset your password or troubleshoot any issues."
-User: "How do I schedule a practice interview?"
-
-AI: "To schedule a practice interview, log into your account, navigate to the 'Schedule Interview' section, and select an available time slot. You can choose the type of interview you'd like to practice, such as coding, system design, or behavioral questions."
-User: "What are the benefits of a premium subscription?"
-
-AI: "A premium subscription offers several benefits, including unlimited practice interviews, access to advanced interview scenarios, personalized feedback, and priority customer support. You can view all the features on our subscription page."
-User: "The video isn't working during my practice interview. What should I do?"
-
-AI: "I'm sorry to hear about the video issue. Please try refreshing the page and ensuring your browser has permission to use your camera. If the problem persists, try using a different browser or checking your internet connection. Let me know if you need further assistance."
-Remember to stay up-to-date with any new features or changes to the platform to provide the most accurate and helpful information to users.`
-
-// POST function to handle incoming requests
 export async function POST(req) {
-  const openai = new OpenAI() // Create a new instance of the OpenAI client
-  const data = await req.json() // Parse the JSON body of the incoming request
+    try {
+        const data = await req.json();
+        const userQuery = data[1].content;
 
-  // Create a chat completion request to the OpenAI API
-  const completion = await openai.chat.completions.create({
-    messages: [{role: 'system', content: systemPrompt}, ...data], // Include the system prompt and user messages
-    model: 'gpt-4o', // Specify the model to use
-    stream: true, // Enable streaming responses
-  })
-
-  // Create a ReadableStream to handle the streaming response
-  const stream = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder() // Create a TextEncoder to convert strings to Uint8Array
-      try {
-        // Iterate over the streamed chunks of the response
-        for await (const chunk of completion) {
-          const content = chunk.choices[0]?.delta?.content // Extract the content from the chunk
-          if (content) {
-            const text = encoder.encode(content) // Encode the content to Uint8Array
-            controller.enqueue(text) // Enqueue the encoded text to the stream
-          }
+        if (!userQuery || typeof userQuery !== 'string') {
+            throw new Error("Invalid user query.");
         }
-      } catch (err) {
-        controller.error(err) // Handle any errors that occur during streaming
-      } finally {
-        controller.close() // Close the stream when done
-      }
-    },
-  })
 
-  return new NextResponse(stream) // Return the stream as the response
+        const retrieveResponse = await fetch('http://localhost:3000/api/retrieve', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ query: userQuery }),
+        });
+
+        const retrieveData = await retrieveResponse.json();
+        const contexts = retrieveData.contexts || [];
+
+        const augmentedQuery = `<CONTEXT>\n${contexts.join("\n\n-------\n\n")}\n-------\n</CONTEXT>\n\nMY QUESTION:\n${userQuery}`;
+
+        const systemPrompt = `You are an expert personal assistant. Answer any questions I have based only on the context provided.`;
+
+        const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: "gpt-4",
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: augmentedQuery }
+                ],
+                stream: true,
+            }),
+        });
+
+        const stream = new ReadableStream({
+            async start(controller) {
+                const encoder = new TextEncoder();
+
+                // Get a reader to read the response stream
+                const reader = openaiResponse.body.getReader();
+                let done = false;
+
+                while (!done) {
+                    const { value, done: readerDone } = await reader.read();
+                    done = readerDone;
+
+                    // Decode the chunk to a string
+                    const chunk = new TextDecoder().decode(value);
+                    
+                    // Parse each line
+                    const lines = chunk.split("\n").filter(Boolean);
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+
+                        // If the line is `[DONE]`, break the loop
+                        if (trimmedLine === "[DONE]") {
+                            done = true;
+                            break;
+                        }
+
+                        // Remove the 'data: ' prefix
+                        if (trimmedLine.startsWith("data: ")) {
+                            const content = trimmedLine.slice(6).trim();
+                            if (content) {
+                                try {
+                                    // Parse JSON and enqueue the content
+                                    const json = JSON.parse(content);
+                                    const text = json.choices[0]?.delta?.content || "";
+                                    const encodedText = encoder.encode(text);
+                                    controller.enqueue(encodedText);
+                                } catch (err) {
+                                    console.error("Error parsing stream:", err);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                controller.close();
+            }
+        });
+
+        return new NextResponse(stream);
+    } catch (err) {
+        console.error("Error handling chat request:", err);
+        return new NextResponse("Internal Server Error", { status: 500 });
+    }
 }

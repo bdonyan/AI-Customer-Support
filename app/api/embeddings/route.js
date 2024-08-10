@@ -21,8 +21,10 @@ export async function POST() {
         // Use existing Pinecone index
         const pineconeIndex = pc.Index("chatbot");
 
+        await pineconeIndex.deleteAll();
+
         // Load the PDF
-        const pdfPath = path.resolve('./public/documents/radforded.pdf');
+        const pdfPath = path.resolve('./public/documents/2020WinterCareerGuide.pdf');
         const loader = new PDFLoader(pdfPath);
         const documents = await loader.load();
 

@@ -4,7 +4,10 @@ import { Box, Button, Stack, TextField } from '@mui/material'
 
 export default function Home() {
   const [messages, setMessages] = useState([
-    {role: 'assistant', content: `Hi! I'm the Headstarter support Assistant. How can I help you today?`},
+    {role: 'assistant', content: `Hello! I’m your Caltech career advisor here to assist you with any questions you might have about your career development journey. 
+      Whether you need help crafting a standout resume, preparing for an interview, or exploring job opportunities, 
+      I’m here to guide you every step of the way. How can I assist you today?
+`},
   ]);
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
